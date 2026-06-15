@@ -6,89 +6,98 @@ def run_backtest(df: pd.DataFrame, initial_capital: float = 10000.0) -> dict:
     """
     Simulates the MA crossover strategy against buy-and-hold.
 
-    Strategy: invested when signal=1, cash (0% return) when signal=0.
-    Buy-and-hold: always invested from day 1.
+    signal = 1  → long (profit when price rises)
+    signal = 0  → cash (no return)
+    signal = -1 → short (profit when price falls)
 
-    Returns a dict with daily portfolio values, metrics, and trade log.
+    strategy_return = signal * daily_return handles all three automatically.
     """
     df = df.copy()
+    short_mode = bool((df["signal"] == -1).any())
 
-    # Daily returns of the underlying asset
     df["daily_return"] = df["price"].pct_change().fillna(0)
-
-    # Strategy return: only captures the daily return when invested
     df["strategy_return"] = df["signal"] * df["daily_return"]
-
-    # Portfolio values
     df["strategy_value"] = initial_capital * (1 + df["strategy_return"]).cumprod()
     df["bah_value"] = initial_capital * (1 + df["daily_return"]).cumprod()
 
     # --- Trade log ---
     trades = []
-    in_trade = False
+    position = None   # "long" or "short" or None
     entry_price = None
     entry_date = None
 
     for date, row in df.iterrows():
-        if row["crossover"] == 1 and not in_trade:
-            in_trade = True
+        if row["crossover"] == 1:   # Golden Cross → go long
+            if position == "short":
+                ret = round((entry_price / row["price"] - 1) * 100, 2)
+                trades.append({"Type": "Short", "Entry date": entry_date.strftime("%Y-%m-%d"),
+                    "Exit date": date.strftime("%Y-%m-%d"), "Entry price": round(entry_price, 2),
+                    "Exit price": round(row["price"], 2), "Return %": ret,
+                    "Result": "Win" if ret > 0 else "Loss"})
+            position = "long"
             entry_price = row["price"]
             entry_date = date
-        elif row["crossover"] == -1 and in_trade:
-            exit_price = row["price"]
-            ret = (exit_price / entry_price - 1) * 100
-            trades.append({
-                "Entry date": entry_date.strftime("%Y-%m-%d"),
-                "Exit date": date.strftime("%Y-%m-%d"),
-                "Entry price": round(entry_price, 2),
-                "Exit price": round(exit_price, 2),
-                "Return %": round(ret, 2),
-                "Result": "Win" if ret > 0 else "Loss",
-            })
-            in_trade = False
 
-    # If still in a trade, mark it as open
-    if in_trade:
-        trades.append({
-            "Entry date": entry_date.strftime("%Y-%m-%d"),
-            "Exit date": "Open",
-            "Entry price": round(entry_price, 2),
-            "Exit price": round(df["price"].iloc[-1], 2),
-            "Return %": round((df["price"].iloc[-1] / entry_price - 1) * 100, 2),
-            "Result": "Open",
-        })
+        elif row["crossover"] == -1:   # Death Cross → close long, go short if short_mode
+            if position == "long":
+                ret = round((row["price"] / entry_price - 1) * 100, 2)
+                trades.append({"Type": "Long", "Entry date": entry_date.strftime("%Y-%m-%d"),
+                    "Exit date": date.strftime("%Y-%m-%d"), "Entry price": round(entry_price, 2),
+                    "Exit price": round(row["price"], 2), "Return %": ret,
+                    "Result": "Win" if ret > 0 else "Loss"})
+            if short_mode:
+                position = "short"
+                entry_price = row["price"]
+                entry_date = date
+            else:
+                position = None
+
+    # Open position
+    if position is not None:
+        current_price = df["price"].iloc[-1]
+        if position == "long":
+            ret = round((current_price / entry_price - 1) * 100, 2)
+        else:
+            ret = round((entry_price / current_price - 1) * 100, 2)
+        trades.append({"Type": position.capitalize(), "Entry date": entry_date.strftime("%Y-%m-%d"),
+            "Exit date": "Open", "Entry price": round(entry_price, 2),
+            "Exit price": round(current_price, 2), "Return %": ret, "Result": "Open"})
 
     # --- Metrics ---
-    def sharpe(returns_series):
-        r = returns_series.dropna()
-        if r.std() == 0:
-            return 0.0
-        return round((r.mean() / r.std()) * np.sqrt(252), 2)
+    def sharpe(r):
+        r = r.dropna()
+        return round((r.mean() / r.std()) * np.sqrt(252), 2) if r.std() != 0 else 0.0
 
-    def max_drawdown(value_series):
-        roll_max = value_series.cummax()
-        dd = (value_series - roll_max) / roll_max * 100
-        return round(dd.min(), 2)
+    def max_dd(v):
+        return round(((v - v.cummax()) / v.cummax() * 100).min(), 2)
 
-    def total_return(value_series):
-        return round((value_series.iloc[-1] / value_series.iloc[0] - 1) * 100, 2)
+    def tot_ret(v):
+        return round((v.iloc[-1] / v.iloc[0] - 1) * 100, 2)
 
-    pct_in_market = round(df["signal"].mean() * 100, 1)
+    completed = [t for t in trades if t["Result"] != "Open"]
+    wins = [t for t in completed if t["Result"] == "Win"]
+    win_rate = round(len(wins) / max(len(completed), 1) * 100, 1)
+
+    if short_mode:
+        time_label = f"Long: {round((df['signal']==1).mean()*100,1)}% / Short: {round((df['signal']==-1).mean()*100,1)}%"
+    else:
+        time_label = f"{round((df['signal']==1).mean()*100,1)}%"
 
     metrics = {
-        "Strategy total return": f"{total_return(df['strategy_value'])}%",
-        "Buy-and-hold total return": f"{total_return(df['bah_value'])}%",
+        "Strategy total return": f"{tot_ret(df['strategy_value'])}%",
+        "Buy-and-hold total return": f"{tot_ret(df['bah_value'])}%",
         "Strategy Sharpe ratio": sharpe(df["strategy_return"]),
         "Buy-and-hold Sharpe ratio": sharpe(df["daily_return"]),
-        "Strategy max drawdown": f"{max_drawdown(df['strategy_value'])}%",
-        "Buy-and-hold max drawdown": f"{max_drawdown(df['bah_value'])}%",
-        "Time in market": f"{pct_in_market}%",
-        "Number of completed trades": len([t for t in trades if t['Result'] != 'Open']),
-        "Win rate": f"{round(sum(1 for t in trades if t['Result'] == 'Win') / max(len([t for t in trades if t['Result'] != 'Open']), 1) * 100, 1)}%",
+        "Strategy max drawdown": f"{max_dd(df['strategy_value'])}%",
+        "Buy-and-hold max drawdown": f"{max_dd(df['bah_value'])}%",
+        "Time in market": time_label,
+        "Completed trades": len(completed),
+        "Win rate": f"{win_rate}%",
     }
 
     return {
         "df": df,
         "metrics": metrics,
         "trades": pd.DataFrame(trades) if trades else pd.DataFrame(),
+        "short_mode": short_mode,
     }
