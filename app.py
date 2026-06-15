@@ -52,19 +52,59 @@ except Exception as e:
 sig = current_signal(df)
 
 # ----------------------------------------------------------------
-# Signal banner
+# Action card — what should I do RIGHT NOW?
+# ----------------------------------------------------------------
+st.subheader("What should I do right now?")
+my_position = st.radio("My current position in this asset:", ["Not invested", "Long (I own it)", "Short (I'm betting against it)"], horizontal=True)
+
+if sig["invested"] and not sig["short"]:
+    # Signal says: LONG
+    if my_position == "Not invested":
+        action, action_color, advice = "BUY", "green", f"The strategy says go long. The trend is bullish — the {short_w}-day average is above the {long_w}-day. Buy on your broker and hold until a Death Cross fires."
+    elif my_position == "Long (I own it)":
+        action, action_color, advice = "HOLD", "green", f"You're already in the right position. Hold. The signal hasn't changed — last confirmed at {sig['last_cross_date']}. No action needed."
+    else:
+        action, action_color, advice = "CLOSE SHORT + BUY", "#f4a261", f"The trend flipped bullish on {sig['last_cross_date']}. Close your short position and go long."
+
+elif sig["short"]:
+    # Signal says: SHORT
+    if my_position == "Not invested":
+        action, action_color, advice = "SHORT (or stay out)", "#ef553b", f"The strategy says go short — the trend is bearish. If you have a margin account, you can short on IBKR. If not, stay in cash until the next Golden Cross."
+    elif my_position == "Long (I own it)":
+        action, action_color, advice = "SELL", "#ef553b", f"The trend turned bearish on {sig['last_cross_date']}. The strategy says exit your long. Sell on your broker."
+    else:
+        action, action_color, advice = "HOLD SHORT", "#ef553b", f"You're in the right position. Hold your short. The Death Cross fired on {sig['last_cross_date']} and the trend is still bearish."
+
+else:
+    # Signal says: CASH
+    if my_position == "Long (I own it)":
+        action, action_color, advice = "SELL", "#f4a261", f"The trend turned bearish on {sig['last_cross_date']}. The strategy says move to cash — sell your position and wait for the next Golden Cross."
+    else:
+        action, action_color, advice = "WAIT", "#f4a261", f"Signal is bearish — stay in cash. Re-enter when the {short_w}-day MA crosses back above the {long_w}-day MA (Golden Cross)."
+
+st.markdown(
+    f"<div style='background:{action_color}22;border:2px solid {action_color};"
+    f"padding:16px 20px;border-radius:8px;margin-bottom:20px'>"
+    f"<div style='font-size:1.4em;font-weight:bold;color:{action_color}'>{action}</div>"
+    f"<div style='margin-top:6px'>{advice}</div>"
+    f"</div>",
+    unsafe_allow_html=True,
+)
+
+# ----------------------------------------------------------------
+# Signal detail banner
 # ----------------------------------------------------------------
 if sig["short"]:
-    color, icon = "#ef553b", "SHORT"
+    color = "#ef553b"
 elif sig["invested"]:
-    color, icon = "green", "LONG"
+    color = "green"
 else:
-    color, icon = "orange", "CASH"
+    color = "orange"
 
 st.markdown(
     f"<div style='background:{color}22;border-left:4px solid {color};"
     f"padding:12px 16px;border-radius:6px;margin-bottom:16px'>"
-    f"<strong>Current signal: {sig['state']}</strong> &nbsp;|&nbsp; "
+    f"<strong>Signal detail:</strong> {sig['state']} &nbsp;|&nbsp; "
     f"Price: {sig['price']} &nbsp;|&nbsp; "
     f"{short_w}-day MA: {sig['ma_short']} &nbsp;|&nbsp; "
     f"{long_w}-day MA: {sig['ma_long']} &nbsp;|&nbsp; "
